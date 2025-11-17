@@ -72,9 +72,25 @@
         <div class="col-lg-6">
             <div class="card shadow-sm h-100">
                 <div class="card-header bg-dark text-white">
-                    <h5>관련 추천 뉴스 (Top 5)</h5>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">관련 추천 뉴스 (Top 5)</h5>
+                        
+                        <form id="retry-form" 
+                              action="/meetings/retry-news/{{ meeting.id }}" 
+                              method="POST" 
+                              class="mb-0">
+                            
+                            <button type="button" 
+                                    id="retry-button"
+                                    class="btn btn-outline-light btn-sm"
+                                    title="키워드/요약본을 기반으로 뉴스 분석을 다시 실행합니다.">
+                                재시도
+                            </button>
+                        </form>
+                    </div>
                 </div>
-                <div class="card-body p-0">
+
+                <div class="card-body p-0" id="news-content-area">
                     <div class="accordion" id="accordionNews">
                         
                         {% if meeting.news_items %}
@@ -124,4 +140,76 @@
         
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const retryButton = document.getElementById('retry-button');
+    const retryForm = document.getElementById('retry-form');
+    const newsContentArea = document.getElementById('news-content-area');
+
+    if (retryButton) {
+        retryButton.addEventListener('click', function(event) {
+            
+            // 1. 확인 창 띄우기
+            if (!confirm('뉴스 분석을 다시 실행하시겠습니까? \n(기존 뉴스 목록이 있다면 덮어씁니다.)')) {
+                return; // 사용자가 '취소'를 누르면 중단
+            }
+
+            // 2. 버튼 비활성화 및 로딩 상태로 변경
+            this.disabled = true;
+            this.innerHTML = `
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                재시도 중...
+            `;
+
+            // 3. (핵심) 뉴스 영역을 "분석 중..." 스피너로 즉시 교체
+            // (이곳에 있던 문제가 되는 주석을 제거했습니다.)
+            const loadingHTML = `
+                <div class="p-4 text-center text-muted">
+                    <p>
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <strong>관련 뉴스를 분석 중입니다...</strong>
+                    </p>
+                    <p class="mb-0 small">페이지를 새로고침하여 진행 상황을 확인할 수 있습니다.</p>
+                </div>
+            `;
+            newsContentArea.innerHTML = loadingHTML;
+
+            // 4. (핵심) 백그라운드로 폼 제출 (Fetch API 사용)
+            fetch(retryForm.action, {
+                method: retryForm.method,
+                headers: {
+                    // (CSRF 토큰 등이 있다면 여기 추가)
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    // 서버가 4xx, 5xx 에러를 반환한 경우
+                    console.error('재시도 요청 실패:', response.statusText);
+                    alert('뉴스 분석 재시도에 실패했습니다. (서버 오류)');
+                    
+                    // 버튼 활성화 (다시 누를 수 있도록)
+                    this.disabled = false;
+                    this.innerHTML = '재시도';
+                }
+                
+                // 성공 (202 Accepted)
+                console.log('재시도 작업이 백그라운드에서 시작되었습니다.');
+                // 버튼은 "재시도 중..." 상태로 그대로 두어
+                // 작업이 진행 중임을 계속 알림.
+            })
+            .catch(error => {
+                // 네트워크 오류 등
+                console.error('네트워크 오류:', error);
+                alert('뉴스 분석 재시도에 실패했습니다. (네트워크 오류)');
+                this.disabled = false;
+                this.innerHTML = '재시도';
+            });
+        });
+    }
+});
+</script>
 {% endblock %}

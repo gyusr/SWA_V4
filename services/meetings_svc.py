@@ -6,7 +6,6 @@ from typing import Dict
 from services import processes_svc
 import json
 from schemas import meetings_schemas
-# import httpx # [롤백] ConnectTimeout 처리가 더 이상 필요 없으므로 제거
 
 # [추가] Celery 태스크 임포트
 try:
@@ -20,7 +19,7 @@ except Exception as e:
     process_news_task = None
 
 
-# [롤백] create_meeting 함수 (Gemini 요약까지만 수행)
+# [수정] create_meeting 함수 (즉각 응답 + Celery 호출)
 async def create_meeting(
     conn: Connection,
     title: str,
@@ -39,11 +38,9 @@ async def create_meeting(
             detail=f"Gemini 회의록 요약 중 오류 발생: {e}"
         )
 
-    # 2. [롤백] Google 뉴스 URL 검색 단계 (제거)
-    # (이 작업은 이제 Celery가 수행합니다)
+    # (제거) 2~5. 뉴스 관련 로직 (Celery로 이동)
 
-
-    # 3. [수정] (Step 2) 1차 DB 저장 (news_items는 NULL, keywords는 저장)
+    # 2. [수정] 1차 DB 저장 (news_items는 NULL, keywords는 저장)
     print(f"DEBUG: (FastAPI) Step 2. 1차 DB 저장 시작 (news_items=NULL)...")
     meeting_id = None
     try:
@@ -90,27 +87,28 @@ async def create_meeting(
             detail="알 수 없는 오류 (DB 저장 실패)"
         )
 
-    # 4. [롤백] (Step 3) Celery 백그라운드 태스크 호출 (keyword_meeting_list를 전달)
+    # 3. [추가] Celery 백그라운드 태스크 호출
     if process_news_task and meeting_id:
         print(f"DEBUG: (FastAPI) Step 3. Celery 태스크 호출 (process_news_task.delay)...")
         try:
-            # [롤백] 인자 변경: news_url_list -> keyword_meeting_list
-            # (이전 'TypeError: ... unexpected keyword user_id' 오류를 잡기 위해 'user_id'도 다시 추가)
             process_news_task.delay(
                 meeting_id=meeting_id,
-                user_id=session_user["id"], # 'TypeError' 유령 작업을 잡기 위해
+                user_id=session_user["id"],
                 summary_meeting=summary_meeting,
                 keyword_meeting_list=keyword_meeting_list
             )
             print(f"DEBUG: (FastAPI) Step 3. Celery 태스크 호출 완료.")
         except Exception as e:
             # Celery 호출 실패 (예: Redis 연결 불가)
+            # 이 경우 DB는 1차 저장되었지만, 백그라운드 작업은 실행되지 않음.
+            # (중요 로깅 필요)
             print(f"경고: Celery 태스크 호출 실패! (meeting_id: {meeting_id}): {e}")
-            
+            # 하지만 사용자는 이미 즉시 응답(리디렉션)을 받아야 하므로 오류를 raise하지 않음.
+    
     elif not process_news_task:
          print(f"경고: Celery 태스크(process_news_task)가 정의되지 않아 백그라운드 작업을 건너뜁니다.")
 
-    # 5. (FastAPI) 즉시 리디렉션
+    # 4. (FastAPI) 즉시 리디렉션
     # (이 함수가 반환되면 routes/meetings.py에서 리디렉션 수행)
 
 
@@ -226,42 +224,34 @@ async def get_by_id_meeting(
             detail=str(e)
         )
 
-
-async def delete_meeting(
+# [신규] 재시도를 위해 news_items를 NULL로 비우는 함수
+async def clear_news_items_by_id(
     conn: Connection,
     id: int,
     session_user: Dict
 ):
+    """뉴스 재시도를 위해 news_items 컬럼을 NULL로 설정합니다."""
     try:
-        query = '''
-        delete from meetings
-        where user_id = :user_id and id = :id
-        '''
-
-        result = await conn.execute(
+        query = """
+        UPDATE meetings
+        SET news_items = NULL
+        WHERE id = :id AND user_id = :user_id
+        """
+        
+        await conn.execute(
             text(query),
             {
-                "user_id": session_user["id"],
-                "id": id
+                "id": id,
+                "user_id": session_user["id"]
             }
         )
-
         await conn.commit()
-
-        # 삭제된 행이 없으면 (잘못된 ID 또는 권한 없음)
-        if result.rowcount == 0:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="해당 회의록을 찾을 수 없거나 접근 권한이 없습니다."
-            )
-
-        return {"detail": "회의록이 성공적으로 삭제되었습니다."}
+        print(f"DEBUG: (FastAPI) news_items 컬럼 NULL로 초기화 (meeting_id: {id})")
 
     except SQLAlchemyError as e:
         print(e)
         await conn.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail="DB 업데이트 중 오류 발생 (뉴스 초기화 실패)"
         )
-        

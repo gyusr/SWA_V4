@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 from typing import List, Dict, Optional
 from urllib.parse import urlparse # DB_CONN 파싱용
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # (있으면 좋음)
+import torch.multiprocessing as mp
+mp.set_start_method('spawn', force=True)
+
 # FastAPI 서비스 모듈 임포트 (비동기 함수 호출용)
 # (주의: Celery 환경에서 FastAPI의 비동기 함수를 호출하려면 asyncio.run() 사용 필요)
 from services import processes_svc 
