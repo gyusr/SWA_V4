@@ -4,4 +4,12 @@ redis-cli ping
 celery -A celery_worker.celery_app purge
 celery -A celery_worker.celery_app worker --loglevel=info
 
+# NEW
+celery -A celery_worker.celery_app worker -Q cpu_io --loglevel=info
+celery -A celery_worker.celery_app worker -Q gpu --pool=solo --loglevel=info
+
+celery -A celery_worker.celery_app worker -Q gpu --pool=solo --loglevel=info --max-tasks-per-child=1
+
 uvicorn main:app --reload
+
+source ./.venv/bin/activate
